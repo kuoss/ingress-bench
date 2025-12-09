@@ -141,19 +141,28 @@ jobs:
     - name: wrk2 Low Load
       run: |
         mkdir -p benchmarks/${{ matrix.controller }}
-        ./wrk2 -t4 -c100 -d30s -R1000 --latency "${{ steps.ingress.outputs.endpoint }}/healthz" > benchmarks/${{ matrix.controller }}/low.json
-
+        ./wrk2 -t4 -c100 -d30s -R1000 --latency "${{ steps.ingress.outputs.endpoint }}/healthz" \
+          > benchmarks/${{ matrix.controller }}/low.json
+    
     - name: wrk2 High Load
       run: |
-        ./wrk2 -t12 -c400 -d60s -R20000 --latency "${{ steps.ingress.outputs.endpoint }}/healthz" > benchmarks/${{ matrix.controller }}/high.json
+        # NOTE: we do NOT create the directory here – it was already created above
+        ./wrk2 -t12 -c400 -60s -R20000 --latency "${{ steps.ingress.outputs.endpoint }}/healthz" \
+          > benchmarks/${{ matrix.controller }}/high.json
 
     - name: Parse & Upload
       run: |
+        mkdir -p benchmarks/${{ matrix.controller }}
         echo "Load,RPS,P95,P99" > benchmarks/${{ matrix.controller }}/summary.csv
-        awk '/requests\/sec/{rps=$3} /95%/{p95=$2} /99%/{p99=$2; print "High,"rps","p95","p99}' benchmarks/${{ matrix.controller }}/high.json >> benchmarks/${{ matrix.controller }}/summary.csv
+        HIGH_JSON="benchmarks/${{ matrix.controller }}/high.json"
+        if [[ -f "$HIGH_JSON" ]]; then
+          awk '/requests\/sec/{rps=$3} /95%/{p95=$2} /99%/{p99=$2; print "High,"rps","p95","p99}' "$HIGH_JSON" \
+            >> benchmarks/${{ matrix.controller }}/summary.csv
+        else
+          echo "High,0,0,0" >> benchmarks/${{ matrix.controller }}/summary.csv
+        fi
         echo "## ${{ matrix.controller }}" >> $GITHUB_STEP_SUMMARY
         cat benchmarks/${{ matrix.controller }}/summary.csv >> $GITHUB_STEP_SUMMARY
-      if: always()
 
     - name: Upload results
       uses: actions/upload-artifact@v4
