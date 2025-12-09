@@ -1,0 +1,162 @@
+name: bench
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+
+env:
+  KIND_VERSION: v0.23.0
+  INGRESS_NGINX_VERSION: 4.11.3
+  TRAEFIK_VERSION: 25.12.1
+  WRK2_VERSION: v1.0.7
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        controller: [nginx, traefik]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1.10.0
+      with:
+        version: ${{ env.KIND_VERSION }}
+        cluster: ingress-bench
+
+    - name: Add Helm repos
+      run: |
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm repo add traefik https://traefik.github.io/charts
+        helm repo update
+
+    - name: Install ${{ matrix.controller }} controller
+      run: |
+        if [ "${{ matrix.controller }}" = "traefik" ]; then
+          helm upgrade --install --wait --timeout=5m \
+            --namespace traefik --create-namespace \
+            traefik traefik/traefik \
+            --version ${{ env.TRAEFIK_VERSION }} \
+            --set service.type=NodePort \
+            --set ports.web.port=8000 \
+            --set ports.web.nodePort=30080
+        else
+          helm upgrade --install --wait --timeout=5m \
+            --namespace ingress-nginx --create-namespace \
+            nginx ingress-nginx/ingress-nginx \
+            --version ${{ env.INGRESS_NGINX_VERSION }} \
+            --set controller.service.type=NodePort \
+            --set controller.replicaCount=1
+        fi
+
+    - name: Deploy test app + Ingress (Inline)
+      run: |
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: echo-server
+        spec:
+          replicas: 3
+          selector:
+            matchLabels:
+              app: echo-server
+          template:
+            spec:
+              containers:
+              - name: echo
+                image: mendelsohn/echo-server:0.1
+                ports:
+                - containerPort: 8080
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: echo-server
+        spec:
+          selector:
+            app: echo-server
+          ports:
+          - port: 80
+            targetPort: 8080
+        ---
+        apiVersion: networking.k8s.io/v1
+        kind: IngressClass
+        metadata:
+          name: ${{ matrix.controller }}
+        spec:
+          controller: ${{ matrix.controller == 'nginx' && 'k8s.io/ingress-nginx' || 'traefik.io/ingress-controller' }}
+        ---
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: echo-ingress
+        spec:
+          ingressClassName: ${{ matrix.controller }}
+          rules:
+          - http:
+              paths:
+              - path: /healthz
+                pathType: Prefix
+                backend:
+                  service:
+                    name: echo-server
+                    port:
+                      number: 80
+        EOF
+
+    - name: Wait for readiness
+      run: |
+        kubectl rollout status deployment/echo-server --timeout=60s
+        sleep 10
+
+    - name: Get Ingress endpoint
+      id: ingress
+      run: |
+        NODE_IP=$(kubectl get node ingress-bench-control-plane -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+        NS=${{ matrix.controller == 'nginx' && 'ingress-nginx' || 'traefik' }}
+        SVC_NAME=$(kubectl get deployment -n $NS -o name | sed 's|deployment/||')
+        PORT=$(kubectl get svc -n $NS $SVC_NAME -o jsonpath='{.spec.ports[0].nodePort}')
+        echo "endpoint=http://${NODE_IP}:${PORT}" >> $GITHUB_OUTPUT
+        echo "INGRESS_ENDPOINT=http://${NODE_IP}:${PORT}" >> $GITHUB_ENV
+
+    - name: Download wrk2
+      uses: actions/cache@v4
+      id: cache
+      with:
+        path: wrk2
+        key: wrk2-${{ env.WRK2_VERSION }}
+
+    - name: Install wrk2
+      if: steps.cache.outputs.cache-hit != 'true'
+      run: |
+        curl -LO https://github.com/giltene/wrk2/releases/download/${{ env.WRK2_VERSION }}/wrk2-${{ env.WRK2_VERSION }}-linux.tar.gz
+        tar -xzf wrk2-${{ env.WRK2_VERSION }}-linux.tar.gz
+        chmod +x wrk2
+
+    - name: wrk2 Low Load
+      run: |
+        mkdir -p benchmarks/${{ matrix.controller }}
+        ./wrk2 -t4 -c100 -d30s -R1000 --latency "${{ steps.ingress.outputs.endpoint }}/healthz" > benchmarks/${{ matrix.controller }}/low.json
+
+    - name: wrk2 High Load
+      run: |
+        ./wrk2 -t12 -c400 -d60s -R20000 --latency "${{ steps.ingress.outputs.endpoint }}/healthz" > benchmarks/${{ matrix.controller }}/high.json
+
+    - name: Parse & Upload
+      run: |
+        echo "Load,RPS,P95,P99" > benchmarks/${{ matrix.controller }}/summary.csv
+        awk '/requests\/sec/{rps=$3} /95%/{p95=$2} /99%/{p99=$2; print "High,"rps","p95","p99}' benchmarks/${{ matrix.controller }}/high.json >> benchmarks/${{ matrix.controller }}/summary.csv
+        echo "## ${{ matrix.controller.toUpperCase() }}" >> $GITHUB_STEP_SUMMARY
+        cat benchmarks/${{ matrix.controller }}/summary.csv >> $GITHUB_STEP_SUMMARY
+      if: always()
+
+    - name: Upload results
+      uses: actions/upload-artifact@v4
+      with:
+        name: wrk2-${{ matrix.controller }}
+        path: benchmarks/${{ matrix.controller }}/
