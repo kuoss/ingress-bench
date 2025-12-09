@@ -151,7 +151,7 @@ jobs:
       run: |
         echo "Load,RPS,P95,P99" > benchmarks/${{ matrix.controller }}/summary.csv
         awk '/requests\/sec/{rps=$3} /95%/{p95=$2} /99%/{p99=$2; print "High,"rps","p95","p99}' benchmarks/${{ matrix.controller }}/high.json >> benchmarks/${{ matrix.controller }}/summary.csv
-        echo "## ${{ matrix.controller.toUpperCase() }}" >> $GITHUB_STEP_SUMMARY
+        echo "## ${{ matrix.controller }}" >> $GITHUB_STEP_SUMMARY
         cat benchmarks/${{ matrix.controller }}/summary.csv >> $GITHUB_STEP_SUMMARY
       if: always()
 
