@@ -28,30 +28,30 @@ jobs:
         version: ${{ env.KIND_VERSION }}
         cluster: ingress-bench
 
-    - name: Add Helm repos
+    - name: Install nginx controller
+      if: matrix.controller == 'nginx' 
       run: |
         helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm repo update
+        helm upgrade --install --wait --timeout=5m \
+          --namespace ingress-nginx --create-namespace \
+          nginx ingress-nginx/ingress-nginx \
+          --version ${{ env.INGRESS_NGINX_VERSION }} \
+          --set controller.service.type=NodePort \
+          --set controller.replicaCount=1
+
+    - name: Install traefik controller
+      if: matrix.controller == 'traefik' 
+      run: |
         helm repo add traefik https://traefik.github.io/charts
         helm repo update
-
-    - name: Install ${{ matrix.controller }} controller
-      run: |
-        if [ "${{ matrix.controller }}" = "traefik" ]; then
-          helm upgrade --install --wait --timeout=5m \
-            --namespace traefik --create-namespace \
-            traefik traefik/traefik \
-            --version ${{ env.TRAEFIK_VERSION }} \
-            --set service.type=NodePort \
-            --set ports.web.port=8000 \
-            --set ports.web.nodePort=30080
-        else
-          helm upgrade --install --wait --timeout=5m \
-            --namespace ingress-nginx --create-namespace \
-            nginx ingress-nginx/ingress-nginx \
-            --version ${{ env.INGRESS_NGINX_VERSION }} \
-            --set controller.service.type=NodePort \
-            --set controller.replicaCount=1
-        fi
+        helm upgrade --install --wait --timeout=5m \
+          --namespace traefik --create-namespace \
+          traefik traefik/traefik \
+          --version ${{ env.TRAEFIK_VERSION }} \
+          --set service.type=NodePort \
+          --set ports.web.port=8000 \
+          --set ports.web.nodePort=30080
 
     - name: Deploy test app + Ingress (Inline)
       run: |
