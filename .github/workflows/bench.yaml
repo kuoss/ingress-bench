@@ -118,6 +118,7 @@ jobs:
     - name: Wait for readiness
       run: |
         kubectl rollout status deployment/agnhost --timeout=60s
+        sleep 10
 
     - name: Get Ingress endpoint
       id: ingress
