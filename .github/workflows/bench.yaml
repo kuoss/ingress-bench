@@ -39,6 +39,7 @@ jobs:
           --version ${{ env.INGRESS_NGINX_VERSION }} \
           --set controller.service.type=NodePort \
           --set controller.replicaCount=1
+        helm ls -A
 
     - name: Install traefik controller
       if: matrix.controller == 'traefik' 
@@ -52,6 +53,7 @@ jobs:
           --set service.type=NodePort \
           --set ports.web.port=8000 \
           --set ports.web.nodePort=30080
+        helm ls -A
 
     - name: Deploy test app + Ingress (Inline)
       run: |
